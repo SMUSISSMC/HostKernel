@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-version=@abiname@@localversion@
-image_path=/boot/@image-stem@-$version
+version=6.5.0-999-generic
+image_path=/boot/vmlinuz-$version
 
 if [ "$1" = abort-upgrade ]; then
     exit 0
