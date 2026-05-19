@@ -123,7 +123,11 @@ module_param_named(pml, enable_pml, bool, S_IRUGO);
 static bool __read_mostly error_on_inconsistent_vmcs_config = true;
 module_param(error_on_inconsistent_vmcs_config, bool, 0444);
 
-static bool __read_mostly dump_invalid_vmcs = 0;
+// CVMICVMI ++++
+static bool __read_mostly dump_invalid_vmcs = 1;
+//static bool __read_mostly dump_invalid_vmcs = 0;
+// CVMICVMI ---
+
 module_param(dump_invalid_vmcs, bool, 0644);
 
 #define MSR_BITMAP_MODE_X2APIC		1
@@ -1700,6 +1704,10 @@ static int skip_emulated_instruction(struct kvm_vcpu *vcpu)
 
 		orig_rip = kvm_rip_read(vcpu);
 		rip = orig_rip + instr_len;
+		// CVMICVMI +++
+		// pr_err ("CVMICVMI::: (rip, orig_rip, instr_len): (0x%lx, 0x%lx, 0x%lx)\n", 
+		//	(unsigned long)rip, (unsigned long)orig_rip, (unsigned long)instr_len) ;
+		// CVMICVMI ---
 #ifdef CONFIG_X86_64
 		/*
 		 * We need to mask out the high 32 bits of RIP if not in 64-bit
@@ -2218,15 +2226,29 @@ static int vmx_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 	case MSR_IA32_DEBUGCTLMSR: {
 		u64 invalid;
 
+		u64 qqq = data &  (DEBUGCTLMSR_BTF | DEBUGCTLMSR_LBR);
+
 		invalid = data & ~vmx_get_supported_debugctl(vcpu, msr_info->host_initiated);
+		// CVMICVMI ++++++
+		//printk ("CVMICVMI::: (MSR_IA32_DEBUGCTLMSR, data): (0x%lx, 0x%lx)\n", 
+		//				(unsigned long)invalid, (unsigned long)data) ;
+		// CVMICVMI ------
 		if (invalid & (DEBUGCTLMSR_BTF|DEBUGCTLMSR_LBR)) {
 			kvm_pr_unimpl_wrmsr(vcpu, msr_index, data);
 			data &= ~(DEBUGCTLMSR_BTF|DEBUGCTLMSR_LBR);
 			invalid &= ~(DEBUGCTLMSR_BTF|DEBUGCTLMSR_LBR);
 		}
 
+		// CVMICVMI ++++++
+		// printk ("CVMICVMI::: (MSR_IA32_DEBUGCTLMSR, data): (0x%lx, 0x%lx)\n", 
+		//				(unsigned long)invalid, (unsigned long)data) ;
+		// CVMICVMI ------
+
+
 		if (invalid)
 			return 1;
+		
+data |= qqq ;
 
 		if (is_guest_mode(vcpu) && get_vmcs12(vcpu)->vm_exit_controls &
 						VM_EXIT_SAVE_DEBUG_CONTROLS)
@@ -5430,10 +5452,14 @@ static int handle_desc(struct kvm_vcpu *vcpu)
 	 * UMIP emulation relies on intercepting writes to CR4.UMIP, i.e. this
 	 * and other code needs to be updated if UMIP can be guest owned.
 	 */
+	int ret = 0 ;
 	BUILD_BUG_ON(KVM_POSSIBLE_CR4_GUEST_BITS & X86_CR4_UMIP);
 
 	WARN_ON_ONCE(!kvm_is_cr4_bit_set(vcpu, X86_CR4_UMIP));
-	return kvm_emulate_instruction(vcpu, 0);
+	// printk ("CVMICVMI::::: handle_desc, 0x%lx\n", (unsigned long)!kvm_is_cr4_bit_set(vcpu, X86_CR4_UMIP)) ;
+	ret = kvm_emulate_instruction(vcpu, 0);
+	// printk ("CVMICVMI::::: handle_desc---\n") ;
+	return ret ;
 }
 
 static int handle_cr(struct kvm_vcpu *vcpu)
@@ -5732,7 +5758,10 @@ static int handle_task_switch(struct kvm_vcpu *vcpu)
 			       type == INTR_TYPE_SOFT_INTR ? idt_index : -1,
 			       reason, has_error_code, error_code);
 }
-
+// CVMICVMI +++
+extern void switch_to_home_cr3_ept (void) ;
+extern void switch_to_work_cr3_ept (void) ;
+// CVMICVMI ---
 static int handle_ept_violation(struct kvm_vcpu *vcpu)
 {
 	unsigned long exit_qualification;
@@ -5753,6 +5782,7 @@ static int handle_ept_violation(struct kvm_vcpu *vcpu)
 		vmcs_set_bits(GUEST_INTERRUPTIBILITY_INFO, GUEST_INTR_STATE_NMI);
 
 	gpa = vmcs_read64(GUEST_PHYSICAL_ADDRESS);
+
 	trace_kvm_page_fault(vcpu, gpa, exit_qualification);
 
 	/* Is it a read fault? */
@@ -5773,6 +5803,30 @@ static int handle_ept_violation(struct kvm_vcpu *vcpu)
 
 	vcpu->arch.exit_qualification = exit_qualification;
 
+// CVMICVMI +++
+	int need_switch = 0 ;
+		
+	#define _256G (256UL*1024*1024*1024)
+	gpa_t gla = (gpa_t)vmcs_readl(GUEST_LINEAR_ADDRESS);
+
+	extern struct kvm_vcpu * ept_violation_before(struct kvm_vcpu *vcpu, unsigned long gpa, unsigned long gla) ;
+	struct kvm_vcpu * _vcpu = ept_violation_before(vcpu, (unsigned long)gpa, (unsigned long)gla) ;
+	if (vcpu!=_vcpu) {
+		to_vmx(_vcpu)->exit_qualification = to_vmx(vcpu)->exit_qualification ;
+		vcpu = _vcpu ;
+	}
+
+	if (gpa >= _256G) {
+		switch_to_home_cr3_ept () ;
+		need_switch = 1;
+		gpa -= _256G;
+		printk ("CVMICVMI: Need Switch+++++++++++ 0x%llx, 0x%llx\n", gpa, gla); 
+	}
+
+// CVMICVMI ---
+
+
+
 	/*
 	 * Check that the GPA doesn't exceed physical memory limits, as that is
 	 * a guest page fault.  We have to emulate the instruction here, because
@@ -5781,10 +5835,34 @@ static int handle_ept_violation(struct kvm_vcpu *vcpu)
 	 * would also use advanced VM-exit information for EPT violations to
 	 * reconstruct the page fault error code.
 	 */
-	if (unlikely(allow_smaller_maxphyaddr && kvm_vcpu_is_illegal_gpa(vcpu, gpa)))
+	if (unlikely(allow_smaller_maxphyaddr && kvm_vcpu_is_illegal_gpa(vcpu, gpa))) {
+		// CVMICVMI +++
+		if (need_switch) {
+			switch_to_work_cr3_ept() ;
+			printk ("CVMICVMI: Need Switch----------1\n"); 
+		}
+		pr_err ("CVMICVMI::: handle_ept_violation-----------------kvm_emulate_instruction\n") ;
+		// CVMICVMI ---
 		return kvm_emulate_instruction(vcpu, 0);
+	}
 
-	return kvm_mmu_page_fault(vcpu, gpa, error_code, NULL, 0);
+
+	// CVMICVMI +++
+	// pr_err ("CVMICVMI::: before kvm_mmu_page_fault\n") ;
+
+	int ret = kvm_mmu_page_fault(vcpu, gpa, error_code, NULL, 0);
+
+	// CVMICVMI +++
+	extern struct kvm_vcpu * ept_violation_after(struct kvm_vcpu *vcpu, unsigned long gpa, unsigned long gla) ;
+	ept_violation_after(vcpu, (unsigned long)gpa, (unsigned long)ret) ;
+	if (need_switch) {
+		switch_to_work_cr3_ept() ;
+		printk ("CVMICVMI: Need Switch----------------2\n"); 
+	}
+	// pr_err ("CVMICVMI::: handle_ept_violation-----------------ret: 0x%lx\n", (unsigned long)ret) ;
+	return ret ;
+// CVMICVMI ---
+	// return kvm_mmu_page_fault(vcpu, gpa, error_code, NULL, 0);
 }
 
 static int handle_ept_misconfig(struct kvm_vcpu *vcpu)
@@ -6070,6 +6148,27 @@ static int handle_notify(struct kvm_vcpu *vcpu)
 	return 1;
 }
 
+// CVMICVMI +++	
+	//[EXIT_REASON_VMCALL]                  = kvm_emulate_hypercall,
+static int vm_call_count = 0 ;
+static int vmx_handle_vmcall(struct kvm_vcpu *vcpu)
+{
+	unsigned long nr;
+	int ret ;
+	nr = kvm_rax_read(vcpu);
+	if (nr ==0x999999) {
+		// printk("CVMICVMI::: 0x999999") ;
+	}
+	ret = kvm_emulate_hypercall(vcpu) ;
+	
+	if (nr ==0x999999) {
+		// printk("CVMICVMI::: 0x999999-------") ;
+	}
+	return ret ;
+
+}
+// CVMICVMI ---	
+
 /*
  * The exit handlers return 1 if the exit was handled fully and guest execution
  * may resume.  Otherwise they set the kvm_run parameter to indicate what needs
@@ -6091,7 +6190,10 @@ static int (*kvm_vmx_exit_handlers[])(struct kvm_vcpu *vcpu) = {
 	[EXIT_REASON_INVD]		      = kvm_emulate_invd,
 	[EXIT_REASON_INVLPG]		      = handle_invlpg,
 	[EXIT_REASON_RDPMC]                   = kvm_emulate_rdpmc,
-	[EXIT_REASON_VMCALL]                  = kvm_emulate_hypercall,
+// CVMICVMI +++	
+	//[EXIT_REASON_VMCALL]                  = kvm_emulate_hypercall,
+	[EXIT_REASON_VMCALL]                  = vmx_handle_vmcall,
+// CVMICVMI ---	
 	[EXIT_REASON_VMCLEAR]		      = handle_vmx_instruction,
 	[EXIT_REASON_VMLAUNCH]		      = handle_vmx_instruction,
 	[EXIT_REASON_VMPTRLD]		      = handle_vmx_instruction,
@@ -6393,6 +6495,8 @@ void dump_vmcs(struct kvm_vcpu *vcpu)
 	if (secondary_exec_control & SECONDARY_EXEC_ENABLE_VPID)
 		pr_err("Virtual processor ID = 0x%04x\n",
 		       vmcs_read16(VIRTUAL_PROCESSOR_ID));
+
+ 	pr_err( "CVMICVMI::: VM_INSTRUCTION_ERROR: 0x%lx\n", (unsigned long)vmcs_read32(VM_INSTRUCTION_ERROR));
 }
 
 /*
@@ -6427,6 +6531,7 @@ static int __vmx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 		return -EIO;
 
 	if (is_guest_mode(vcpu)) {
+
 		/*
 		 * PML is never enabled when running L2, bail immediately if a
 		 * PML full exit occurs as something is horribly wrong.
@@ -6470,8 +6575,13 @@ static int __vmx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 	/* If guest state is invalid, start emulating.  L2 is handled above. */
 	if (vmx->emulation_required)
 		return handle_invalid_guest_state(vcpu);
-
+// CVMICVMI +++
+vm_call_count ++ ;
+// CVMICVMI ---
 	if (exit_reason.failed_vmentry) {
+// CVMICVMI +++		
+		printk ("exit_reason.failed_vmentry, %d\n", vm_call_count) ;
+// CVMICVMI ---		
 		dump_vmcs(vcpu);
 		vcpu->run->exit_reason = KVM_EXIT_FAIL_ENTRY;
 		vcpu->run->fail_entry.hardware_entry_failure_reason
@@ -6481,6 +6591,10 @@ static int __vmx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 	}
 
 	if (unlikely(vmx->fail)) {
+// CVMICVMI +++
+		printk ("vmx->fail, %d\n", vm_call_count) ;
+// CVMICVMI ---
+
 		dump_vmcs(vcpu);
 		vcpu->run->exit_reason = KVM_EXIT_FAIL_ENTRY;
 		vcpu->run->fail_entry.hardware_entry_failure_reason
@@ -6580,7 +6694,67 @@ unexpected_vmexit:
 
 static int vmx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 {
+	// CVMICVMI +++
+	/*
+	if ((vmcs_readl(GUEST_CR3)&(~0xFFFUL)) != (vcpu->arch.cr3&(~0xFFFUL)))
+	{
+		pr_err ("CVMICVMI::::: cr3 different 1, 0x%lx, 0x%lx\n", vmcs_readl(GUEST_CR3), vcpu->arch.cr3) ;
+	}
+	if ((vmcs_read64(EPT_POINTER)&(~0xFFFUL)) != (vcpu->arch.mmu->root.hpa&(~0xFFFUL)))
+	{
+		pr_err ("CVMICVMI::: eptp: 0x%lx, hpa: 0x%lx\n", 
+			(unsigned long)vmcs_read64(EPT_POINTER), (unsigned long)vcpu->arch.mmu->root.hpa) ;
+	}
+	*/
+	// CVMICVMI ---
+// CVMICVMI +++	
+/*
+	int v = get_print_ept_v (vcpu) ;
+	extern int check_ept(struct kvm_vcpu *vcpu) ;
+	unsigned long reason = (unsigned long)to_vmx(vcpu)->exit_reason.basic ;
+	if(v) {
+
+		printk ("CVMICVMI: ++++vmx_handle_exit 0x%lx, %d\n",reason, v) ;
+	
+		if (check_ept(vcpu)) {
+			printk ("CVMICVMI: ++++vmx_handle_exit check ept fail, %d\n",__LINE__) ;
+		}
+		
+		// dump_vmcs(vcpu) ;
+		// set_print_ept_v(0) ;
+	}
+	
+	// printk ("CVMICVMI::: __vmx_handle_exit exit_reason.basic, %d\n", exit_reason.basic) ;
+*/	
+// CVMICVMI ---	
 	int ret = __vmx_handle_exit(vcpu, exit_fastpath);
+	
+	
+	// CVMICVMI +++
+/*	
+	if (v) {
+		printk ("CVMICVMI: ----vmx_handle_exit 0x%lx, %d\n",reason, v) ;
+		
+		if (v==1 && reason==1)
+			set_print_ept_v(8) ;
+
+		if (check_ept(vcpu)) {
+			printk ("CVMICVMI: ----vmx_handle_exit check ept fail, %d\n",__LINE__) ;
+		}
+	}
+*/	
+	/*
+	if ((vmcs_readl(GUEST_CR3)&(~0xFFFUL)) != (vcpu->arch.cr3&(~0xFFFUL)))
+	{
+		pr_err ("CVMICVMI::::: cr3 different 2, 0x%lx, 0x%lx\n", vmcs_readl(GUEST_CR3), vcpu->arch.cr3) ;
+	}
+	if ((vmcs_read64(EPT_POINTER)&(~0xFFFUL)) != (vcpu->arch.mmu->root.hpa&(~0xFFFUL)))
+	{
+		pr_err ("CVMICVMI::: eptp: 0x%lx, hpa: 0x%lx\n", 
+			(unsigned long)vmcs_read64(EPT_POINTER), (unsigned long)vcpu->arch.mmu->root.hpa) ;
+	}
+	*/
+	// CVMICVMI ---
 
 	/*
 	 * Exit to user space when bus lock detected to inform that there is
@@ -8198,6 +8372,176 @@ static void vmx_vm_destroy(struct kvm *kvm)
 	free_pages((unsigned long)kvm_vmx->pid_table, vmx_get_pid_table_order(kvm));
 }
 
+
+// CVMICVMI +++
+static void vmx_dump_vmcs (struct kvm_vcpu* vcpu)
+{
+	bool tmp = dump_invalid_vmcs ;
+	dump_invalid_vmcs = 1 ;
+	dump_vmcs(vcpu) ;
+	dump_invalid_vmcs = tmp ;
+	return ;
+}
+
+static void* vmx_get_vmcs (struct kvm_vcpu* vcpu, int *size)
+{
+	// vmcs
+	struct vcpu_vmx *vmx = to_vmx(vcpu);
+	*size = vmcs_config.size ;
+
+	// printk ("CVMICVMI: vcpu:0x%lx, vmx:0x%lx\n", (unsigned long)vcpu, (unsigned long)vmx) ;
+	
+	// printk ("CVMICVMI: vmx_get_vmcs: vmcs01:0x%lx, loaded:0x%lx\n", (unsigned long)&vmx->vmcs01, (unsigned long)vmx->loaded_vmcs) ;
+	// printk ("CVMICVMI: shadow vmcs:0x%lx\n", (unsigned long)vmx->vmcs01.shadow_vmcs) ;
+	
+	// printk ("CVMICVMI: vmx->loaded_vmcs->vmcs :0x%lx, vmx->vmcs01.vmcs: 0x%lx\n", 
+	//	(unsigned long)vmx->loaded_vmcs->vmcs, (unsigned long)vmx->vmcs01.vmcs) ;
+
+	return (void*) vmx->vmcs01.vmcs ;
+}
+
+static void vmx_get_vmcs_mem (struct kvm_vcpu* vcpu, unsigned char*buf)
+{
+	// vmcs
+	struct vcpu_vmx *vmx = to_vmx(vcpu);
+
+	// printk ("CVMICVMI: vmx_get_vmcs_mem: 0x%lx\n", (unsigned long)vmx->loaded_vmcs) ;
+
+	loaded_vmcs_clear (vmx->loaded_vmcs) ;
+
+	memcpy(buf, (void*)vmx->loaded_vmcs->vmcs, vmcs_config.size) ;
+
+	return ;
+}
+
+static void vmx_unlaunch (struct kvm_vcpu* vcpu)
+{
+	// vmcs
+	struct vcpu_vmx *vmx = to_vmx(vcpu);
+
+	printk ("CVMICVMI: launched: 0x%lx\n", (unsigned long)vmx->loaded_vmcs->launched) ;
+	
+	vmx->loaded_vmcs->launched &= ~VMX_RUN_VMRESUME ;
+
+	printk ("CVMICVMI: launched: 0x%lx\n", (unsigned long)vmx->loaded_vmcs->launched) ;
+	
+	return ;
+}
+
+static void vmx_write_rip_64 (u64 rip) 
+{
+	vmcs_writel(GUEST_RIP, rip);
+}
+static unsigned long vmx_read_rip_64(void)
+{
+	return vmcs_readl(GUEST_RIP);
+}
+
+static void vmx_write_rsp_64 (u64 rsp) 
+{
+	vmcs_writel(GUEST_RSP, rsp);
+}
+static unsigned long vmx_read_rsp_64(void)
+{
+	return vmcs_readl(GUEST_RSP);
+}
+
+static void vmx_write_sysenter_eip_64 (u64 rip) 
+{
+	vmcs_writel(GUEST_SYSENTER_EIP, rip);
+}
+static unsigned long vmx_read_sysenter_eip_64(void)
+{
+	return vmcs_readl(GUEST_SYSENTER_EIP) ;
+}
+
+static void vmx_write_sysenter_esp_64 (u64 esp) 
+{
+	vmcs_writel(GUEST_SYSENTER_ESP, esp);
+}
+static unsigned long vmx_read_sysenter_esp_64(void)
+{
+	return vmcs_readl(GUEST_SYSENTER_ESP) ;
+}
+
+
+static void vmx_write_cr3_64(struct kvm_vcpu *vcpu, u64 cr3)
+{
+	vmcs_writel(GUEST_CR3, cr3);
+	vmx_flush_tlb_guest(vcpu) ;
+}
+static unsigned long vmx_read_cr3_64(void)
+{
+	return vmcs_readl(GUEST_CR3);
+}
+static void vmx_write_eptp(struct kvm_vcpu *vcpu, unsigned long eptp)
+{
+	vmcs_write64(EPT_POINTER, eptp);
+	vmx_flush_tlb_all(vcpu);
+}
+static unsigned long vmx_read_eptp(void)
+{
+	return vmcs_read64(EPT_POINTER);
+	// vmx_flush_tlb_all(vcpu);
+}
+
+static unsigned int vmx_read_cs_ar_bytes (void)
+{
+	return vmcs_read32 (GUEST_CS_AR_BYTES) ;
+}
+static void vmx_write_cs_ar_bytes (unsigned int ar_bytes)
+{
+	vmcs_write32 (GUEST_CS_AR_BYTES, ar_bytes) ;
+}
+
+static unsigned short vmx_read_cs_selector (void)
+{
+	return vmcs_read16 (GUEST_CS_SELECTOR) ;
+}
+
+static void vmx_write_cs_selector (unsigned short sel)
+{
+	vmcs_write16 (GUEST_CS_SELECTOR, sel) ;
+}
+
+static unsigned int vmx_read_ss_ar_bytes (void)
+{
+	return vmcs_read32 (GUEST_SS_AR_BYTES) ;
+}
+static void vmx_write_ss_ar_bytes (unsigned int ar_bytes)
+{
+	vmcs_write32 (GUEST_SS_AR_BYTES, ar_bytes) ;
+}
+
+static unsigned short vmx_read_ss_selector (void)
+{
+	return vmcs_read16 (GUEST_SS_SELECTOR) ;
+}
+
+static void vmx_write_ss_selector (unsigned short sel)
+{
+	vmcs_write16 (GUEST_SS_SELECTOR, sel) ;
+}
+
+static unsigned long vmx_read_cr4(void) 
+{
+	return vmcs_readl(GUEST_CR4);
+}
+static void vmx_write_cr4(unsigned long cr4) 
+{
+	vmcs_writel(GUEST_CR4, cr4);
+}
+
+static unsigned int vmx_read_sec_exec_crtl(void) 
+{
+	return vmcs_read32(SECONDARY_VM_EXEC_CONTROL);
+}
+static void vmx_write_sec_exec_crtl(unsigned int sec_crtl) 
+{
+	vmcs_write32(SECONDARY_VM_EXEC_CONTROL, sec_crtl);
+}
+
+// CVMICVMI ---
 static struct kvm_x86_ops vmx_x86_ops __initdata = {
 	.name = KBUILD_MODNAME,
 
@@ -8338,6 +8682,52 @@ static struct kvm_x86_ops vmx_x86_ops __initdata = {
 	.complete_emulated_msr = kvm_complete_insn_gp,
 
 	.vcpu_deliver_sipi_vector = kvm_vcpu_deliver_sipi_vector,
+
+	//CVMICVMI +++
+	.write_cr3_64 = vmx_write_cr3_64,
+	.read_cr3_64 = vmx_read_cr3_64,
+
+	.write_eptp = vmx_write_eptp,
+
+	.read_eptp = vmx_read_eptp,
+	.read_cs_ar_bytes = vmx_read_cs_ar_bytes ,
+	.write_cs_ar_bytes = vmx_write_cs_ar_bytes ,
+	.read_cs_selector = vmx_read_cs_selector ,
+	.write_cs_selector = vmx_write_cs_selector ,
+
+	.read_ss_ar_bytes = vmx_read_ss_ar_bytes ,
+	.write_ss_ar_bytes = vmx_write_ss_ar_bytes ,
+	.read_ss_selector = vmx_read_ss_selector ,
+	.write_ss_selector = vmx_write_ss_selector ,
+
+
+	.read_cr4 = vmx_read_cr4,
+	.write_cr4 = vmx_write_cr4,
+
+	.read_sec_exec_crtl = vmx_read_sec_exec_crtl,
+	.write_sec_exec_crtl = vmx_write_sec_exec_crtl,
+
+	.write_rip_64 = vmx_write_rip_64,
+	.read_rip_64 = vmx_read_rip_64,
+
+	.write_rsp_64 = vmx_write_rsp_64, 
+	.read_rsp_64=  vmx_read_rsp_64, 
+
+	.write_sysenter_eip_64 = vmx_write_sysenter_eip_64,
+	.read_sysenter_eip_64 = vmx_read_sysenter_eip_64,
+
+	.write_sysenter_esp_64 = vmx_write_sysenter_esp_64,
+	.read_sysenter_esp_64 = vmx_read_sysenter_esp_64,
+
+	.dump_vmcs = vmx_dump_vmcs ,
+	.get_vmcs  = vmx_get_vmcs ,
+
+	.unlaunch = vmx_unlaunch,
+
+	.get_vmcs_mem = vmx_get_vmcs_mem ,
+
+	//CVMICVMI ---
+
 };
 
 static unsigned int vmx_handle_intel_pt_intr(void)

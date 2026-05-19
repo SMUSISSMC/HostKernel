@@ -21,6 +21,7 @@
 #include "irq.h"
 #include "ioapic.h"
 #include "mmu.h"
+#include "mmu/mmu_internal.h"
 #include "i8254.h"
 #include "tss.h"
 #include "kvm_cache_regs.h"
@@ -5658,7 +5659,9 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
 		struct kvm_xcrs *xcrs;
 		void *buffer;
 	} u;
-
+// CVMICVMI +++
+// printk ("CVMICVMI::: kvm_arch_vcpu_ioctl: 0x%x\n", ioctl) ;
+// CVMICVMI ---
 	vcpu_load(vcpu);
 
 	u.buffer = NULL;
@@ -9644,6 +9647,13 @@ static int __kvm_emulate_halt(struct kvm_vcpu *vcpu, int state, int reason)
 	 * managed by userspace, in which case userspace is responsible for
 	 * handling wake events.
 	 */
+
+	// CVMICVMI ++++++++++++++
+	/*{
+		dump_stack() ;
+		kvm_x86_ops.dump_vmcs(vcpu) ;
+	}*/
+	// CVMICVMI --------------
 	++vcpu->stat.halt_exits;
 	if (lapic_in_kernel(vcpu)) {
 		vcpu->arch.mp_state = state;
@@ -9822,10 +9832,98 @@ static int complete_hypercall_exit(struct kvm_vcpu *vcpu)
 	return kvm_skip_emulated_instruction(vcpu);
 }
 
+// CVMICVMI +++	
+
+typedef void (*func_switch_to_home_cr3_ept) (void) ; 
+typedef void (*func_switch_to_work_cr3_ept) (void) ; 
+func_switch_to_home_cr3_ept _switch_to_home_cr3_ept = NULL ;
+func_switch_to_work_cr3_ept _switch_to_work_cr3_ept = NULL ;
+
+typedef unsigned long (*MyHyperCallback) (struct kvm_vcpu *vcpu); 
+MyHyperCallback hyper_cb = NULL;
+
+typedef struct kvm_vcpu* (*func_ept_violation)(struct kvm_vcpu *vcpu, unsigned long gpa, unsigned long gla) ;
+func_ept_violation _ept_violation_after, _ept_violation_before = NULL ;
+
+void set_switch_handlers(func_switch_to_home_cr3_ept to_home,
+						func_switch_to_work_cr3_ept to_work) {
+	_switch_to_home_cr3_ept = to_home ;
+	_switch_to_work_cr3_ept = to_work ;
+}
+EXPORT_SYMBOL_GPL(set_switch_handlers) ;
+
+void set_hyper_handler(MyHyperCallback cb) {
+	hyper_cb = cb ;
+}
+EXPORT_SYMBOL_GPL (set_hyper_handler) ;
+
+void set_ept_violation_handler(func_ept_violation before, func_ept_violation after) {
+	_ept_violation_before = before ;
+	_ept_violation_after = after ;
+}
+EXPORT_SYMBOL_GPL (set_ept_violation_handler) ;
+
+struct kvm_vcpu * ept_violation_before(struct kvm_vcpu *vcpu, unsigned long gpa, unsigned long gla) {
+	if (_ept_violation_before) 
+		return _ept_violation_before(vcpu, gpa, gla) ;
+	else 
+		return vcpu ;
+}
+EXPORT_SYMBOL_GPL (ept_violation_before) ;
+
+struct kvm_vcpu * ept_violation_after(struct kvm_vcpu *vcpu, unsigned long gpa, unsigned long gla) {
+	if (_ept_violation_after) 
+		return _ept_violation_after(vcpu, gpa, gla) ;
+	else 
+		return vcpu ;
+}
+EXPORT_SYMBOL_GPL (ept_violation_after) ;
+
+
+void switch_to_home_cr3_ept (void) {
+	if(_switch_to_home_cr3_ept)
+		_switch_to_home_cr3_ept() ;
+}
+EXPORT_SYMBOL_GPL(switch_to_home_cr3_ept);
+
+void switch_to_work_cr3_ept (void) {
+	if(_switch_to_work_cr3_ept)
+		_switch_to_work_cr3_ept() ;
+}
+EXPORT_SYMBOL_GPL(switch_to_work_cr3_ept);
+
+
+
+unsigned long my_hyper_handler(struct kvm_vcpu *vcpu)
+{
+	unsigned long ret = 0;
+
+	if (hyper_cb)
+		ret = hyper_cb(vcpu) ;
+
+	// spin_unlock(&(kvm_lock.wait_lock)) ;
+	return ret ;
+}
+
+
+
 int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 {
 	unsigned long nr, a0, a1, a2, a3, ret;
 	int op_64_bit;
+
+	unsigned long tmp_ret ;
+	{
+		nr = kvm_rax_read(vcpu);
+
+		// printk("CVMICVMI::: hyp call number : 0x%lx\n", nr) ;
+
+		if (nr ==0x999999) {
+			tmp_ret = my_hyper_handler (vcpu) ;
+		}
+	}
+	// CVMICVMI ---	
+
 
 	if (kvm_xen_hypercall_enabled(vcpu->kvm))
 		return kvm_xen_hypercall(vcpu);
@@ -9913,6 +10011,21 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 		vcpu->arch.complete_userspace_io = complete_hypercall_exit;
 		return 0;
 	}
+	// CVMICVMI +++
+	case 0x999999: {
+		/* struct kvm *cur ;
+		// spin_lock(&(kvm_lock.wait_lock)) ;
+		list_for_each_entry(cur, &vm_list, vm_list) {
+
+			printk("CVMICVMI::: pid : 0x%lx\n", (unsigned long)cur->userspace_pid) ;
+		}
+		// spin_unlock(&(kvm_lock.wait_lock)) ;
+		*/
+		ret = tmp_ret;
+		break ;
+	}
+
+	// CVMICVMI --- 
 	default:
 		ret = -KVM_ENOSYS;
 		break;
@@ -9920,6 +10033,11 @@ int kvm_emulate_hypercall(struct kvm_vcpu *vcpu)
 out:
 	if (!op_64_bit)
 		ret = (u32)ret;
+
+// CVMICVMI +++
+	// printk("CVMICVMI::: 0x%lx, 0x%lx, 0x%lx\n", (unsigned long)op_64_bit, ret, tmp_ret) ;
+// CVMICVMI ---		
+
 	kvm_rax_write(vcpu, ret);
 
 	++vcpu->stat.hypercalls;
@@ -10983,6 +11101,9 @@ static int vcpu_run(struct kvm_vcpu *vcpu)
 		if (kvm_vcpu_running(vcpu)) {
 			r = vcpu_enter_guest(vcpu);
 		} else {
+				//printk ("CVMICVMI, HALT 0x%lx, 0x%lx, 0x%lx\n", 
+				//		(unsigned long)vcpu->arch.mp_state, (unsigned long)KVM_MP_STATE_RUNNABLE, (unsigned long)vcpu->arch.apf.halted); // KVM_MP_STATE_RUNNABLE
+
 			r = vcpu_block(vcpu);
 		}
 

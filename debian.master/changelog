@@ -1,6 +1,6 @@
-linux (6.5.0-26.26) mantic; urgency=medium
+linux (6.5.0-999.26+vmcare) mantic; urgency=medium
 
-  * mantic/linux: 6.5.0-26.26 -proposed tracker (LP: #2056049)
+  * mantic/linux: 6.5.0-999.26+vmcare -proposed tracker (LP: #2056049)
 
   * Packaging resync (LP: #1786013)
     - [Packaging] update annotations scripts

@@ -1732,6 +1732,55 @@ struct kvm_x86_ops {
 	 * Returns vCPU specific APICv inhibit reasons
 	 */
 	unsigned long (*vcpu_get_apicv_inhibit_reasons)(struct kvm_vcpu *vcpu);
+
+	// CVMICVMI +++
+	void (*dump_vmcs) (struct kvm_vcpu *vcpu);
+	void* (*get_vmcs) (struct kvm_vcpu *vcpu, int *size);
+	void (*unlaunch) (struct kvm_vcpu *vcpu);
+
+
+	void (*write_rip_64) (u64 rip);
+	unsigned long (*read_rip_64)(void) ;
+
+	void (*write_rsp_64) (u64 rsp);
+	unsigned long (*read_rsp_64)(void) ;
+	
+
+	void (*write_sysenter_eip_64) (u64 eip);
+	unsigned long (*read_sysenter_eip_64)(void) ;
+
+	void (*get_vmcs_mem) (struct kvm_vcpu* vcpu, unsigned char*buf);
+
+
+	void (*write_sysenter_esp_64) (u64 esp);
+	unsigned long (*read_sysenter_esp_64)(void) ;
+
+    void (*write_cr3_64) (struct kvm_vcpu *vcpu, u64 cr3);
+	unsigned long (*read_cr3_64)(void) ;
+	
+	void (*write_eptp) (struct kvm_vcpu* vcpu, unsigned long eptp);
+	unsigned long (*read_eptp) (void);
+
+	unsigned int (*read_cs_ar_bytes) (void) ;
+	void (*write_cs_ar_bytes) (unsigned int ar_bytes) ;
+
+	unsigned short (*read_cs_selector) (void) ;
+	void (*write_cs_selector) (unsigned short sel) ;
+
+	unsigned int (*read_ss_ar_bytes) (void) ;
+	void (*write_ss_ar_bytes) (unsigned int ar_bytes) ;
+
+	unsigned short (*read_ss_selector) (void) ;
+	void (*write_ss_selector) (unsigned short sel) ;
+
+    void (*write_cr4) (unsigned long cr4);
+	unsigned long (*read_cr4)(void) ;
+
+	void (*write_sec_exec_crtl) (unsigned int sec_crtl);
+	unsigned int (*read_sec_exec_crtl)(void) ;
+
+	// CVMICVMI ---
+
 };
 
 struct kvm_x86_nested_ops {

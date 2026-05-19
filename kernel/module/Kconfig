@@ -188,7 +188,7 @@ config MODULE_SRCVERSION_ALL
 
 config MODULE_SIG
 	bool "Module signature verification"
-	select MODULE_SIG_FORMAT
+	default n
 	help
 	  Check modules for valid signatures upon load: the signature
 	  is simply appended to the module. For more information see
